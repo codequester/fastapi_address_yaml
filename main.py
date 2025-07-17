@@ -15,7 +15,27 @@ env = Environment(
     autoescape=select_autoescape(['j2'])
 )
 
-template = env.get_template('address.yaml.j2')
+import re
+
+def render_templates_for_address(address, templates_dir):
+    rendered = {}
+    for fname in os.listdir(templates_dir):
+        if fname.endswith('.j2'):
+            template = env.get_template(fname)
+            # Derive output filename: replace <field> in template filename with address fields
+            out_fname = fname[:-3]  # Remove .j2
+            # Find <field> patterns
+            matches = re.findall(r'<(\w+)>', out_fname)
+            for field in matches:
+                value = str(getattr(address, field, ''))
+                out_fname = out_fname.replace(f'<{field}>', value)
+            # Optionally, replace spaces with underscores and lowercase for name
+            if 'name' in matches:
+                value = str(getattr(address, 'name', '')).replace(' ', '_').lower()
+                out_fname = out_fname.replace(str(getattr(address, 'name', '')), value)
+            yaml_content = template.render(address=address.dict())
+            rendered[out_fname] = yaml_content
+    return rendered
 
 app = FastAPI()
 
@@ -68,13 +88,12 @@ async def addresses_to_yaml(payload: AddressPayload):
             target_dir = os.path.join(repo_dir, payload.git_path)
             os.makedirs(target_dir, exist_ok=True)
             for address in payload.addresses:
-                yaml_str = template.render(address=address.dict())
-                safe_name = address.name.replace(' ', '_').lower()
-                filename = f"address-{safe_name}-{address.state}-{address.zip}.yaml"
-                file_path = os.path.join(target_dir, filename)
-                with open(file_path, "w") as f:
-                    f.write(yaml_str)
-                result[filename] = yaml_str
+                rendered = render_templates_for_address(address, os.path.join(os.path.dirname(__file__), 'templates'))
+                for yaml_filename, yaml_content in rendered.items():
+                    file_path = os.path.join(target_dir, yaml_filename)
+                    with open(file_path, "w") as f:
+                        f.write(yaml_content)
+                    result[yaml_filename] = yaml_content
 
             # # Stage, commit, and push
             # repo.git.add(payload.git_path)
