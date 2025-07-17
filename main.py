@@ -40,7 +40,7 @@ async def addresses_to_yaml(payload: AddressPayload):
             filename = f"address-{safe_name}-{address.state}-{address.zip}.yaml"
             result[filename] = yaml_str
         # The following values are available for git logic:
-        # payload.git_repo_url, payload.git_branch, payload.git_path
+        # payload.git_repo_url, payload.git_branch, payload.git_pathgit 
         return result
     except TemplateError as e:
         raise HTTPException(status_code=500, detail=f"Template rendering error: {str(e)}")
