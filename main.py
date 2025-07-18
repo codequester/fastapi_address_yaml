@@ -6,7 +6,7 @@ from git import Repo
 import os
 import requests
 import tempfile, uuid
-
+import re
 
 # Set up Jinja2 environment
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), 'templates')
@@ -15,7 +15,7 @@ env = Environment(
     autoescape=select_autoescape(['j2'])
 )
 
-import re
+
 
 def render_templates_for_address(address, templates_dir):
     rendered = {}
@@ -52,6 +52,7 @@ class AddressPayload(BaseModel):
     git_branch: str
     git_path: str
     addresses: List[Address]
+    approvalNeeded: bool = True
 
 @app.post("/address/yaml")
 async def addresses_to_yaml(payload: AddressPayload):
@@ -137,8 +138,18 @@ async def addresses_to_yaml(payload: AddressPayload):
             pr_resp = requests.post(pr_api, json=pr_data, headers=headers)
             if pr_resp.status_code not in (200, 201):
                 raise HTTPException(status_code=500, detail=f"Failed to create PR: {pr_resp.text}")
-            pr_url = pr_resp.json().get("html_url")
-        return {"yaml_files": result, "pull_request_url": pr_url}
+            pr_json = pr_resp.json()
+            pr_url = pr_json.get("html_url")
+            merged = False
+            if not payload.approvalNeeded:
+                # Auto-merge the PR
+                merge_url = pr_json.get("url") + "/merge"
+                merge_resp = requests.put(merge_url, headers=headers, json={"commit_title": pr_title})
+                if merge_resp.status_code in (200, 201):
+                    merged = True
+                else:
+                    raise HTTPException(status_code=500, detail=f"Failed to auto-merge PR: {merge_resp.text}")
+            return {"yaml_files": result, "pull_request_url": pr_url, "auto_merged": merged}
     except TemplateError as e:
         raise HTTPException(status_code=500, detail=f"Template rendering error: {str(e)}")
     except Exception as e:
