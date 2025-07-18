@@ -37,6 +37,36 @@ def render_templates_for_address(address, templates_dir):
             rendered[out_fname] = yaml_content
     return rendered
 
+def write_rendered_files(rendered_dict, target_dir):
+    os.makedirs(target_dir, exist_ok=True)
+    for yaml_filename, yaml_content in rendered_dict.items():
+        file_path = os.path.join(target_dir, yaml_filename)
+        with open(file_path, "w") as f:
+            f.write(yaml_content)
+
+def create_pull_request(repo_path, branch, pr_title, pr_body, token):
+    pr_api = f"https://api.github.com/repos/{repo_path}/pulls"
+    pr_data = {
+        "title": pr_title,
+        "head": branch,
+        "base": "main",
+        "body": pr_body
+    }
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+    pr_resp = requests.post(pr_api, json=pr_data, headers=headers)
+    if pr_resp.status_code not in (200, 201):
+        raise HTTPException(status_code=500, detail=f"Failed to create PR: {pr_resp.text}")
+    return pr_resp.json()
+
+def merge_pull_request(pr_json, pr_title, token):
+    merge_url = pr_json.get("url") + "/merge"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+    merge_resp = requests.put(merge_url, headers=headers, json={"commit_title": pr_title})
+    if merge_resp.status_code in (200, 201):
+        return True
+    else:
+        raise HTTPException(status_code=500, detail=f"Failed to auto-merge PR: {merge_resp.text}")
+
 app = FastAPI()
 
 
@@ -87,68 +117,31 @@ async def addresses_to_yaml(payload: AddressPayload):
             repo.git.checkout("-b", payload.git_branch)
             # Write YAML files
             target_dir = os.path.join(repo_dir, payload.git_path)
-            os.makedirs(target_dir, exist_ok=True)
             for address in payload.addresses:
                 rendered = render_templates_for_address(address, os.path.join(os.path.dirname(__file__), 'templates'))
-                for yaml_filename, yaml_content in rendered.items():
-                    file_path = os.path.join(target_dir, yaml_filename)
-                    with open(file_path, "w") as f:
-                        f.write(yaml_content)
-                    result[yaml_filename] = yaml_content
+                write_rendered_files(rendered, target_dir)
+                result.update(rendered)
 
-            # # Stage, commit, and push
-            # repo.git.add(payload.git_path)
-
-            # --- Stage and commit the file ---
+            # Stage, commit, and push
             commit_msg = f"Add address YAML files [{uuid.uuid4()}]"
             repo.index.add([payload.git_path])
             repo.index.commit(commit_msg)
-
-            # --- Push the new branch ---
             origin = repo.remote(name="origin")
             origin.push(refspec=f"{payload.git_branch}:{payload.git_branch}")
             print(f"Branch '{payload.git_branch}' pushed to remote.")
 
-            #repo.remotes.origin.push(refspec=f"{payload.git_branch}:{payload.git_branch}")
-           
-            # Create PR via GitHub API
-
-            #repo_path = payload.git_repo_url.rstrip(".git").split(":")[-1].replace("https://github.com/", "")
-
-            # --- Parse owner and repo name from URL ---
-            # e.g. https://github.com/your-username/your-repo.git
+            # Parse owner and repo name from URL
             repo_parts = payload.git_repo_url.rstrip(".git").split("/")
             owner = repo_parts[-2]
             repo_name = repo_parts[-1]
-
-            pr_api = f"https://api.github.com/repos/{owner}/{repo_name}/pulls"
+            repo_path = f"{owner}/{repo_name}"
             pr_title = f"Add address YAML files [{uuid.uuid4()}]"
             pr_body = "Automated PR for address YAML files."
-            pr_data = {
-                "title": pr_title,
-                "head": payload.git_branch,
-                "base": "main",
-                "body": pr_body
-            }
-            headers = {
-                "Authorization": f"token {github_token}", 
-                "Accept": "application/vnd.github.v3+json"
-            }
-            print("Creating pull request...")
-            pr_resp = requests.post(pr_api, json=pr_data, headers=headers)
-            if pr_resp.status_code not in (200, 201):
-                raise HTTPException(status_code=500, detail=f"Failed to create PR: {pr_resp.text}")
-            pr_json = pr_resp.json()
+            pr_json = create_pull_request(repo_path, payload.git_branch, pr_title, pr_body, github_token)
             pr_url = pr_json.get("html_url")
             merged = False
             if not payload.approvalNeeded:
-                # Auto-merge the PR
-                merge_url = pr_json.get("url") + "/merge"
-                merge_resp = requests.put(merge_url, headers=headers, json={"commit_title": pr_title})
-                if merge_resp.status_code in (200, 201):
-                    merged = True
-                else:
-                    raise HTTPException(status_code=500, detail=f"Failed to auto-merge PR: {merge_resp.text}")
+                merged = merge_pull_request(pr_json, pr_title, github_token)
             return {"yaml_files": result, "pull_request_url": pr_url, "auto_merged": merged}
     except TemplateError as e:
         raise HTTPException(status_code=500, detail=f"Template rendering error: {str(e)}")
